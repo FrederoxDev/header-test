@@ -1,7 +1,8 @@
 extern crate clang;
-use clang::{Clang, EntityKind, Index};
+use clang::{Clang, Entity, EntityKind, Index};
 use regex::Regex;
 use lazy_static::lazy_static;
+use std::{path::PathBuf};
 
 lazy_static! {
     static ref SIGNATURE_REGEX: Regex = Regex::new(r"@signature\s*\{([^}]*)\}").unwrap();
@@ -11,7 +12,8 @@ fn main() {
     let clang = Clang::new().unwrap();
     let index = Index::new(&clang, false, false);
 
-    let header_path = "C:/Users/freddie/Documents/Amethyst/AmethystAPI/src/minecraft/src/common/world/level/block/registry/BlockTypeRegistry.hpp";
+    let header_path = "C:/Users/freddie/Documents/Amethyst/AmethystAPI/src/minecraft/src/common/world/level/dimension/Dimension.hpp";
+    let header_path_buf = std::path::Path::new(header_path);
 
     // msvc stuff
     let msvc_include_path = "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/include";
@@ -33,41 +35,74 @@ fn main() {
         .parse()
         .expect("Failed to parse the header file");
 
-    // for diag in tu.get_diagnostics() {
-    //     println!("Diagnostic: {:?}", diag);
-    // }
-
     for entity in tu.get_entity().get_children() {
-        if entity.get_kind() != EntityKind::ClassDecl { continue; }
+        match get_entity_path(&entity) {
+            Some(v) => {
+                if v != header_path_buf { 
+                    continue; 
+                }
+            },
+            None => continue
+        };
 
-        let name = entity.get_name().unwrap();
-        if name != "BlockTypeRegistry" { continue; }
-
-        for child in entity.get_children() {
-            if child.get_kind() != EntityKind::Method { continue; }
-
-            let comment_opt = child.get_comment();
-            if comment_opt.is_none() {continue;}
-            let comment = comment_opt.unwrap();
-
-            let signature_opt = try_get_signature_comment(&comment);
-            if signature_opt.is_none() {continue;}
-            let signature = signature_opt.unwrap();
-
-            let mangled_name = child.get_mangled_name().unwrap();
-
-            println!("{}:\n\t'{}'", mangled_name, signature)
+        match entity.get_kind() {
+            EntityKind::ClassDecl => {
+                traverse_class(&entity)
+            },
+            _ => {}
         }
     }
 }
 
-fn try_get_signature_comment(comment: &str) -> Option<String> {
-    let captures = SIGNATURE_REGEX.captures(comment);
-    if captures.is_none() { return None; }
+fn traverse_class(entity: &Entity) {
+    match entity.get_comment() {
+        Some(v) => {
+            if v.contains("@vtable") {
+                generate_vtable(entity);
+            }
+        },
+        _ => {}
+    }
+}
 
-    if let Some(signature) = captures.unwrap().get(1) {
-        return Some(signature.as_str().to_string());
+fn generate_vtable(entity: &Entity) {
+    let name = entity.get_name().unwrap();
+    let vtable_name = format!("{}_vtable", name);
+    let mut vtable = format!("extern {}\n\n", vtable_name);
+
+    for child in entity.get_children() {
+        let directive = match get_variable_directive(&child, "vIndex") {
+            Some(v) => v,
+            None => continue
+        };
+
+        let v_index: Result<u32, _> = directive.parse();
+        let mangled_name = child.get_mangled_name().unwrap();
+
+        match v_index {
+            Ok(index) => {
+                vtable += &format!(
+                    "global {}\n{}:\n\tmov rax, [rel {}]\n\tjmp [rax + {}]\n\n",
+                    mangled_name, mangled_name, vtable_name, index * 8
+                );
+            },
+            _ => continue
+        }
     }
 
-    return None;
+    println!("{}", vtable)
+}
+
+fn get_variable_directive(entity: &Entity, directive: &str) -> Option<String> {
+    let comment = &entity.get_comment()?;
+    let regex = Regex::new(&format!(r"@{}\s*\{{([^}}]*)\}}", directive)).unwrap();
+    let captures = regex.captures(comment)?;
+    let capture = captures.get(1)?;
+    return Some(capture.as_str().to_string());
+}
+
+fn get_entity_path(entity: &Entity) -> Option<PathBuf> {
+    let location = entity.get_location()?;
+    let spelling_location = location.get_spelling_location().file?;
+    return Some(spelling_location.get_path());
 }
