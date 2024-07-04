@@ -1,12 +1,6 @@
 extern crate clang;
 use clang::{Clang, Entity, EntityKind, Index};
 use regex::Regex;
-use lazy_static::lazy_static;
-use std::{path::PathBuf};
-
-lazy_static! {
-    static ref SIGNATURE_REGEX: Regex = Regex::new(r"@signature\s*\{([^}]*)\}").unwrap();
-}
 
 fn main() {
     let clang = Clang::new().unwrap();
@@ -101,7 +95,7 @@ fn get_variable_directive(entity: &Entity, directive: &str) -> Option<String> {
     return Some(capture.as_str().to_string());
 }
 
-fn get_entity_path(entity: &Entity) -> Option<PathBuf> {
+fn get_entity_path(entity: &Entity) -> Option<std::path::PathBuf> {
     let location = entity.get_location()?;
     let spelling_location = location.get_spelling_location().file?;
     return Some(spelling_location.get_path());
