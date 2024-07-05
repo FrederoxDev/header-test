@@ -1,8 +1,7 @@
 extern crate clang;
-use std::{env, fs::{self, OpenOptions}, io::Write};
+use std::{collections::HashSet, env, fs::{self, OpenOptions}, io::Write};
 use clang::{Clang, Entity, EntityKind, Index};
 use parser::ParserArgs;
-use regex::Regex;
 
 mod parser;
 
@@ -80,7 +79,7 @@ fn parse(args: &ParserArgs) {
 
     for entry in generated_asm {
         header += &format!("{}\n", entry.header);
-        body += &format!("{}\n", entry.body);
+        body += &format!("{}", entry.body);
     }
 
     let mut file = OpenOptions::new()
@@ -101,6 +100,8 @@ fn traverse_class(entity: &Entity) -> Vec<AssemblyText> {
             if v.contains("@vtable") {
                 generated_asm.push(generate_vtable(entity));
             }
+
+            generated_asm.extend(general_pass(entity));
         },
         _ => {}
     }
@@ -113,10 +114,31 @@ struct AssemblyText {
     pub body: String
 }
 
+fn general_pass(entity: &Entity) -> Vec<AssemblyText> {
+    let mut result: Vec<AssemblyText> = Vec::new(); 
+
+    for child in entity.get_children() {
+        if let Some(asm_name) = parser::get_variable_directive(&child, "asmName") {
+            let mangled_name = child.get_mangled_name().unwrap();
+
+            let assembly_text = AssemblyText {
+                header: format!("extern {}", asm_name),
+                body: format!("global {}\n{}:\n\tmov rax, [rel {}]\n\tjmp rax", mangled_name, mangled_name, asm_name)
+            };
+
+            result.push(assembly_text);
+        }
+    }
+
+    return result;
+}
+
 fn generate_vtable(entity: &Entity) -> AssemblyText {
     let name = entity.get_name().unwrap();
     let vtable_name = format!("{}_vtable", name);
-    let header = format!("extern {}", vtable_name);
+
+    let mut vtable_names: HashSet<String> = HashSet::new();
+    vtable_names.insert(vtable_name.clone());
 
     let mut body = String::from("");
 
@@ -127,21 +149,37 @@ fn generate_vtable(entity: &Entity) -> AssemblyText {
         };
 
         let v_index: Result<u32, _> = directive.parse();
-        let mangled_name = child.get_mangled_name().unwrap();
+        let mut mangled_name = child.get_mangled_name().unwrap();
+
+        if let Some(symbol) = parser::get_variable_directive(&child, "symbol") {
+            mangled_name = symbol;
+        }
 
         match v_index {
             Ok(index) => {
+                let mut for_vtable = vtable_name.clone(); 
+
+                if let Some(for_name) = parser::get_variable_directive(&child, "for") {
+                    for_vtable = format!("{}_for_{}_vtable", name, for_name);
+                    vtable_names.insert(for_vtable.clone());
+                }
+
                 body += &format!(
                     "global {}\n{}:\n\tmov rax, [rel {}]\n\tjmp [rax + {}]\n\n",
-                    mangled_name, mangled_name, vtable_name, index * 8
+                    mangled_name, mangled_name, for_vtable, index * 8
                 );
             },
             _ => continue
         }
     }
 
+    let joined_vtable_names = vtable_names.into_iter()
+        .map(|name| format!("extern {}", name))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     return AssemblyText {
-        header,
+        header: joined_vtable_names,
         body
     };
 }
